@@ -17,9 +17,9 @@ export default async function CompanyPage({
   params: Promise<{ symbol: string }>;
 }) {
   const { symbol } = await params;
-  const company = getCompany(symbol);
+  const company = await getCompany(symbol);
   if (!company) notFound();
-  const r = analyzeCompany(company);
+  const r = await analyzeCompany(company);
   const f = company.fundamentals;
 
   const metrics = [

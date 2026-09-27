@@ -6,26 +6,58 @@ import { SECTORS, type Action, type CompanyAnalysis, type Sector } from "@/lib/t
 
 const ACTIONS: Action[] = ["Accumulate", "Hold", "Wait", "Avoid"];
 
-export function Screener({ rows }: { rows: CompanyAnalysis[] }) {
+// Light row type for screener - union of full analysis and light data
+type ScreenerRow = CompanyAnalysis | {
+  company: CompanyAnalysis["company"];
+  change1d: number;
+  ltp: number;
+  volume: number;
+  momentum: number;
+  action: "Accumulate" | "Hold" | "Wait" | "Avoid";
+  foundation?: number;
+  valuation?: number;
+  prices?: CompanyAnalysis["prices"];
+  change1m?: number;
+  change3m?: number;
+  change6m?: number;
+  factors?: CompanyAnalysis["factors"];
+  actionWhy?: string;
+  forecast?: CompanyAnalysis["forecast"];
+};
+
+export function Screener({ rows }: { rows: ScreenerRow[] }) {
   const [q, setQ] = useState("");
   const [sector, setSector] = useState<Sector | "All">("All");
   const [action, setAction] = useState<Action | "All">("All");
   const [minFound, setMinFound] = useState(0);
+  const [minMomentum, setMinMomentum] = useState(0);
+  const [showFullOnly, setShowFullOnly] = useState(false);
 
   const filtered = useMemo(() => {
     return rows.filter((r) => {
       const hay = `${r.company.symbol} ${r.company.name}`.toLowerCase();
       if (q && !hay.includes(q.toLowerCase())) return false;
       if (sector !== "All" && r.company.sector !== sector) return false;
-      if (action !== "All" && r.action !== action) return false;
-      if (r.foundation < minFound) return false;
+      if (action !== "All" && (r.action ?? "Wait") !== action) return false;
+      
+      // Foundation filter: only apply to stocks with full analysis (foundation > 0)
+      const hasFullData = (r.foundation ?? 0) > 0;
+      if (showFullOnly && !hasFullData) return false;
+      if (hasFullData && (r.foundation ?? 0) < minFound) return false;
+      
+      // Momentum filter applies to all
+      if ((r.momentum ?? 0) < minMomentum) return false;
+      
       return true;
     });
-  }, [rows, q, sector, action, minFound]);
+  }, [rows, q, sector, action, minFound, minMomentum, showFullOnly]);
+
+  const fullAnalysisCount = rows.filter(r => (r.foundation ?? 0) > 0).length;
+  const liveOnlyCount = rows.filter(r => (r.foundation ?? 0) === 0).length;
 
   return (
     <div className="space-y-5">
-      <div className="grid gap-3 rounded-2xl border border-stone-200 bg-white/70 p-4 sm:grid-cols-2 lg:grid-cols-4">
+      <div className="grid gap-3 rounded-2xl border border-stone-200 bg-white/70 p-4 sm:grid-cols-2 lg:grid-cols-6">
         <label className="text-xs uppercase tracking-wider text-stone-500">
           Search
           <input
@@ -62,7 +94,7 @@ export function Screener({ rows }: { rows: CompanyAnalysis[] }) {
           </select>
         </label>
         <label className="text-xs uppercase tracking-wider text-stone-500">
-          Min foundation {minFound}
+          Min Foundation {minFound}
           <input
             type="range"
             min={0}
@@ -73,11 +105,32 @@ export function Screener({ rows }: { rows: CompanyAnalysis[] }) {
             className="mt-3 w-full"
           />
         </label>
+        <label className="text-xs uppercase tracking-wider text-stone-500">
+          Min Momentum {minMomentum}
+          <input
+            type="range"
+            min={0}
+            max={100}
+            step={5}
+            value={minMomentum}
+            onChange={(e) => setMinMomentum(Number(e.target.value))}
+            className="mt-3 w-full"
+          />
+        </label>
+        <label className="flex items-end">
+          <input
+            type="checkbox"
+            checked={showFullOnly}
+            onChange={(e) => setShowFullOnly(e.target.checked)}
+            className="w-4 h-4 rounded border-stone-300 text-emerald-600 focus:ring-emerald-500"
+          />
+          <span className="ml-2 text-xs text-stone-500">Full analysis only ({fullAnalysisCount})</span>
+        </label>
       </div>
       <p className="text-sm text-stone-500">
-        {filtered.length} of {rows.length} names
+        {filtered.length} of {rows.length} names ({fullAnalysisCount} full analysis, {liveOnlyCount} live-only)
       </p>
-      <CompanyTable rows={filtered} />
+      <CompanyTable rows={filtered as any} />
     </div>
   );
 }

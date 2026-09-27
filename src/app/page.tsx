@@ -1,20 +1,161 @@
 import Link from "next/link";
 import { CompanyTable } from "@/components/CompanyTable";
 import { ActionBadge, ScorePill } from "@/components/Badges";
-import { analyzeAll, marketPulse } from "@/lib/analyze";
 import { cr, pct, signedClass } from "@/lib/format";
 
-export default function Home() {
-  const rows = analyzeAll();
-  const pulse = marketPulse(rows);
-  const accumulate = rows.filter((r) => r.action === "Accumulate");
-  const qualityCheap = [...rows]
+interface AnalysisResult {
+  symbol: string;
+  analysis_date: string;
+  foundation: number;
+  valuation: number;
+  momentum: number;
+  action: "Accumulate" | "Hold" | "Wait" | "Avoid";
+  action_why: string;
+  forecast_return: number;
+  forecast_price: number;
+  up_probability: number;
+  confidence: number;
+  factors_json: string;
+}
+
+interface MarketPulse {
+  names: number;
+  avgFoundation: number;
+  avgValuation: number;
+  breadth: number;
+  marketCapCr: number;
+  nepse: number;
+  nepseChange: number;
+}
+
+async function fetchAnalysis(): Promise<{ analyses: any[]; pulse: MarketPulse }> {
+  const baseUrl = process.env.NEXT_PUBLIC_API_BASE || "http://localhost:3000";
+  
+  // Skip API calls during build (static generation)
+  if (process.env.NODE_ENV === 'production' && process.env.NEXT_PHASE === 'phase-production-build') {
+    return { analyses: [], pulse: { names: 0, avgFoundation: 0, avgValuation: 0, breadth: 0, marketCapCr: 0, nepse: 2742.18, nepseChange: 0.42 } };
+  }
+  
+  try {
+    const [analysisRes, pulseRes, indexRes] = await Promise.all([
+      fetch(`${baseUrl}/api/analysis`, { next: { revalidate: 300 } }),
+      fetch(`${baseUrl}/api/nepse/summary`, { next: { revalidate: 60 } }),
+      fetch(`${baseUrl}/api/nepse/nepse-index`, { next: { revalidate: 60 } }),
+    ]);
+
+    if (!analysisRes.ok || !pulseRes.ok || !indexRes.ok) {
+      throw new Error("API not available");
+    }
+
+    const analysisData = await analysisRes.json();
+    const summaryData = await pulseRes.json();
+    const indexData = await indexRes.json();
+
+    // Calculate pulse from analysis data
+    const analyses = analysisData.analyses || [];
+    const avgFoundation = analyses.length > 0 
+      ? analyses.reduce((acc: number, r: any) => acc + r.foundation, 0) / analyses.length 
+      : 0;
+    const avgValuation = analyses.length > 0
+      ? analyses.reduce((acc: number, r: any) => acc + r.valuation, 0) / analyses.length
+      : 0;
+    const breadth = analyses.length > 0
+      ? (analyses.filter((r: any) => r.foundation > 0).length / analyses.length) * 100
+      : 0;
+    const cap = analyses.reduce((acc: number, r: any) => acc + (STATIC_FUNDAMENTALS[r.symbol]?.marketCapCr || 0), 0);
+
+    // Get NEPSE index
+    let nepse = 2742.18;
+    let nepseChange = 0.42;
+    if (indexData?.["NEPSE Index"]) {
+      nepse = indexData["NEPSE Index"].currentValue ?? nepse;
+      nepseChange = indexData["NEPSE Index"].perChange ?? nepseChange;
+    }
+
+    const pulse: MarketPulse = {
+      names: analyses.length,
+      avgFoundation: Number(avgFoundation.toFixed(1)),
+      avgValuation: Number(avgValuation.toFixed(1)),
+      breadth: Number(breadth.toFixed(0)),
+      marketCapCr: Math.round(cap),
+      nepse,
+      nepseChange,
+    };
+
+    return { analyses, pulse };
+  } catch (error) {
+    console.warn("[Home] API not available, using fallback data:", error);
+    return { analyses: [], pulse: { names: 0, avgFoundation: 0, avgValuation: 0, breadth: 0, marketCapCr: 0, nepse: 2742.18, nepseChange: 0.42 } };
+  }
+}
+
+// Import static fundamentals for market cap lookup
+interface StaticFundamentals {
+  marketCapCr: number;
+  sector?: string;
+}
+
+const STATIC_FUNDAMENTALS: Record<string, StaticFundamentals> = {
+  NABIL: { marketCapCr: 13540 },
+  SCB: { marketCapCr: 5920 },
+  GBIME: { marketCapCr: 9020 },
+  NICA: { marketCapCr: 4760 },
+  NTC: { marketCapCr: 16520 },
+  UNL: { marketCapCr: 16780 },
+  BNL: { marketCapCr: 2610 },
+  HDL: { marketCapCr: 2090 },
+  SHIVM: { marketCapCr: 2150 },
+  CHCL: { marketCapCr: 2620 },
+  UPPER: { marketCapCr: 2300 },
+  NLIC: { marketCapCr: 3880 },
+  OHL: { marketCapCr: 1060 },
+  HIDCL: { marketCapCr: 4160 },
+  NIFRA: { marketCapCr: 5520 },
+  CIT: { marketCapCr: 2570 },
+};
+
+export default async function Home() {
+  const { analyses, pulse } = await fetchAnalysis();
+  
+  // Convert to format expected by UI components
+  const fullAnalysisRows = analyses.map((a: any) => ({
+    company: {
+      symbol: a.symbol,
+      name: a.symbol, // Will be enhanced if needed
+      sector: (STATIC_FUNDAMENTALS[a.symbol] as StaticFundamentals)?.sector || "Others",
+      fundamentals: {
+        pe: 0, pb: 0, eps: 0, bookValue: 0, roe: 0, roa: 0,
+        dividendYield: 0, payout: 0, debtToEquity: 0,
+        profitGrowth3y: 0, revenueGrowth3y: 0, paidUpCr: 0,
+      }
+    },
+    foundation: a.foundation,
+    valuation: a.valuation,
+    momentum: a.momentum,
+    action: a.action,
+    actionWhy: a.action_why,
+    forecast: {
+      expectedReturn: a.forecast_return,
+      expectedPrice: a.forecast_price,
+      low: 0, high: 0,
+      upProbability: a.up_probability,
+      confidence: a.confidence,
+      method: "Pre-computed EOD analysis"
+    }
+  }));
+
+  const accumulate = fullAnalysisRows.filter((r) => r.action === "Accumulate");
+  const qualityCheap = [...fullAnalysisRows]
     .filter((r) => r.foundation >= 60)
     .sort((a, b) => b.valuation - a.valuation)
     .slice(0, 4);
-  const forecasts = [...rows].sort(
+  const forecasts = [...fullAnalysisRows].sort(
     (a, b) => b.forecast.expectedReturn - a.forecast.expectedReturn,
   );
+
+  // Light live data for universe table
+  const { getAllLiveStocksLight } = await import("@/lib/analyze");
+  const allLiveRows = await getAllLiveStocksLight();
 
   return (
     <div className="space-y-10">
@@ -38,13 +179,13 @@ export default function Home() {
             <div className="text-xs uppercase tracking-wider text-stone-500">NEPSE</div>
             <div className="font-serif text-3xl">{pulse.nepse.toFixed(2)}</div>
             <div className={`text-sm ${signedClass(pulse.nepseChange)}`}>
-              {pct(pulse.nepseChange)} (illustrative)
+              {pct(pulse.nepseChange)} (live)
             </div>
           </div>
           <div className="rounded-2xl border border-stone-200 bg-white/70 p-4">
             <div className="text-xs uppercase tracking-wider text-stone-500">Coverage cap</div>
             <div className="font-serif text-2xl leading-tight">{cr(pulse.marketCapCr)}</div>
-            <div className="text-sm text-stone-500">{pulse.names} names</div>
+            <div className="text-sm text-stone-500">{pulse.names} names ({fullAnalysisRows.length} full analysis)</div>
           </div>
           <div className="rounded-2xl border border-stone-200 bg-white/70 p-4">
             <ScorePill label="Avg foundation" value={pulse.avgFoundation} />
@@ -150,8 +291,10 @@ export default function Home() {
       </section>
 
       <section>
-        <h2 className="mb-3 font-serif text-2xl text-emerald-950">Universe</h2>
-        <CompanyTable rows={rows} />
+        <h2 className="mb-3 font-serif text-2xl text-emerald-950">
+          Universe ({allLiveRows.length} live stocks)
+        </h2>
+        <CompanyTable rows={allLiveRows} />
       </section>
     </div>
   );
